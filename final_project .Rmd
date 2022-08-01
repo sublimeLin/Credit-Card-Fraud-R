@@ -1,0 +1,269 @@
+---
+title: "Credit Card Fraud Detection"
+author: "Visesh Jaiswal, Dhaval Patel"
+date: "12/09/2019"
+output: word_document
+---
+
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2) 
+library(readr) 
+library(caret)
+library(DMwR) 
+library(xgboost)
+library(Matrix)
+library(reshape) 
+library(pROC) 
+library(caret)
+library(e1071)
+library(rpart)
+library(randomForest)
+library(ggplot2)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(ROSE)
+library(ROCR)
+
+```
+# 1. Decision Tree
+
+Decision tree is a Recursive partitioning algorithm.Decision trees are built up of two types of nodes: decision nodes, and leaves.At a leaf node we return the majority value of training data routed to the leaf node as a classification decision, or return the mean-value of outcomes as a regression estimate.
+
+
+
+
+
+## Comments
+
+Loading the dataset and converting the Class Variable as factor.
+
+```{r preparation for decision tree}
+#Reading data
+
+data <- read.csv(file.choose(), header = T)
+data$Class <- as.factor(data$Class)
+set.seed(1234)
+data_smote <- SMOTE(Class ~ .,data,perc.over = 20000,perc.under = 150,k=5)
+table(data_smote$Class)
+prop.table(table(data_smote$Class))
+
+#Splitting new data
+
+set.seed(1234)
+
+Ind_Bal <- sample(2,nrow(data_smote),replace = T,prob = c(0.8,0.2))
+
+train_Bal <- data_smote[Ind_Bal==1,]
+test_Bal <- data_smote[Ind_Bal==2,]
+
+
+#checking the proportion in  train_Bal and test_Bal
+
+dim(train_Bal)
+dim(test_Bal)
+prop.table(table(train_Bal$Class))
+prop.table(table(test_Bal$Class))
+
+```
+
+## Comments
+
+before running the decision tree model we are balancing our data from SMOTE algorithm which we'll discuss later on in the file for now we can see that both the training and the testing data has the class propotion as 40-60 %. Let's go head and train our model.
+
+
+```{r Decision tree}
+
+set.seed(1234)
+Tree_Model <- rpart(Class~., data = train_Bal)
+summary(Tree_Model)
+
+
+
+```
+
+## comments
+
+Aa we can see, the tree has 197330 nodes in it let's prune our tree.
+
+```{r}
+# choosing the best complexity parameter "cp" to prune the tree
+cp.optim <- Tree_Model$cptable[which.min(Tree_Model$cptable[,"xerror"]),"CP"]
+# tree prunning using the best complexity parameter. For more in
+tree <- prune(Tree_Model, cp=cp.optim)
+
+#Plotting the tree
+fancyRpartPlot(tree)
+
+```
+
+## Comments
+
+the pruned is shown above. let's go ahead and find out the confussion matrix of this model.
+
+
+```{r}
+#Model performance
+Tree_Pred <- predict(tree,test_Bal,type="class")
+
+#Confusion matrice
+
+confusionMatrix(Tree_Pred,test_Bal$Class)
+
+
+```
+
+
+## Comments
+
+we got an accuracy of 93.54 % but as we look our confusion matrix, out of 19841 times the class was "1", our model missclassified it wrong 2892 times. we need to increase the accuracy of class '1'.so let's run random forest and check out it's result.  
+
+
+```{r data Imbalancement }
+   
+data$Class <- as.factor(data$Class)            #Changing the Class variable as factor 
+table(data$Class)
+100*prop.table(table(data$Class))
+
+```
+
+## Comments:
+Clearly we can see from that the Class 0 that is the cases where fraud was not detected outnubers the Class 1 (Fraud detected) by a huge margin which make predictive models to act biased. The data need to be balanced. We will be using SMOTE algorithm to balance the dataset.  
+
+
+```{r smote}
+data_smote <- SMOTE(Class ~ ., data,perc.over = 20000,perc.under = 100,k=5, dup_size = 0)
+nrow(data_smote)
+
+#Checking the proportion now
+table(data_smote$Class)
+prop.table(table(data_smote$Class))
+```
+
+## Comments:
+After applying the Smote algorithm, we can see the new data frame "data_smote" that has 197292 rows and 31 columns. This dataset is balanced perfectly both getting almost equal proportion in the data. Let's go ahead and do the partition of data.
+
+
+```{r Partitioning of data}
+
+#Separating the class variable from data
+Class_smote <- data_smote$Class
+data_smote$Class <- NULL
+
+#Partitioning the data
+
+Index_smote <- createDataPartition(y = Class_smote,p=0.75,list =F)
+train_smote <- data_smote[Index_smote,]
+test_smote <- data_smote[-Index_smote,]
+
+Class_train_smote <- Class_smote[Index_smote]
+Class_test_smote <- Class_smote[-Index_smote]
+
+```
+
+## Comments: 
+We are partitioning our data in two parts training (75% of data) and testing (25% of data). The predicted class is stored separately from the predictor class as shown.Lets start preparing for XGBoost algorithm.
+
+
+```{r xgboost}
+#Converting the class variable to numeric
+Class_train_smote <- as.numeric(Class_train_smote)-1
+Class_test_smote <- as.numeric(Class_test_smote)-1
+
+
+#Transformation into matrix then xgb.DMatrix objects
+
+
+xgb_train_smote <- xgb.DMatrix(data = model.matrix(~.+0,train_smote),label = Class_train_smote)
+xgb_test_smote <- xgb.DMatrix(data = model.matrix(~.+0,test_smote),label = Class_test_smote)
+
+```
+## Comments
+We have converted the factor variable into numeric as discussed before that XGBoost algorithm works in that way later we are converting our training and testing samples in the form of matrix.
+
+
+```{r xgboost parameters}
+parameters <- list(
+  # General Parameters
+  booster            = "gbtree",          
+   # Booster Parameters
+  eta                = 0.3,               
+  gamma              = 0,                 
+  max_depth          = 6,                 
+  min_child_weight   = 1,                 
+  subsample          = 1,                 
+  colsample_bytree   = 1,                 
+  objective          = "binary:logistic",   
+  seed               = 1234)
+```
+
+
+## Comments
+we are setting the parameters for the XGBoost model. A tree is grown one after other and attempts to reduce misclassification rate in subsequent iterations.•	Then we are using 'eta' which controls the learning rate, i.e., the rate at which our model learns patterns in data. After every round, it shrinks the feature weights to reach the best optimum.The value of eta is 0.3. the 3rd parameter we are setting withe value of 0 is gamma which It controls regularization. Higher the value, higher the regularization. Then  max_depth parameter that controls the depth of the tree.	Larger the depth, more complex the model. min_child_weight, subsample, colsample_bytree: these three parameters having value of 1 are used for: blocking the potential feature interactions to prevent overfitting. Should be tuned using CV, controling the number of samples (observations) supplied to a tree,  controling the number of features (variables) supplied to a tree   respectively. lastly objective which is used as	'binary:logistic' - logistic regression for binary classification. It returns class probabilities.
+ 
+
+
+```{r cross validation}
+xgb_cv <- xgb.cv(params = parameters,
+                 data = xgb_train_smote,
+                 nrounds = 200,
+                 nfold = 5,
+                 showsd = T,
+                 stratified = T,
+                 print_every_n = 10,
+                 early_stopping_rounds = 20,
+                 maximize = F)
+```
+
+## Comments
+we are cross validating first to get the best round for our model.We are getting train error as almost zero in teh last round teht is hundred so we'ii be using nrounds = 158 in our model.This value can change as w run it multiple times, but it will be close to 158.
+ 
+```{r xgboost model}
+#training our model
+xgb_model <- xgb.train(params = parameters,
+                       data = xgb_train_smote,
+                       nrounds = 158,
+                       nthreads=1,
+                       print_every_n = 10,
+                       early_stopping_rounds = 10,
+                       watchlist = list(train = xgb_train_smote),
+                       maximize = F,
+                       eval_metric = "error") 
+```
+
+## Comments
+so we are training our model here we can see as the model iterates every time the train error is decreasing and finally at 82th iteration we are getting train error to be almost zero. let's go ahead and check teh confusion matrix and accuracy of model testing against the test data.
+
+
+```{r CM & Accuracy}
+#CM and accuracy
+xgb_pred <- predict(xgb_model,xgb_test_smote)
+xgb_pred <- ifelse(xgb_pred > 0.5,1,0)
+confusionMatrix(factor(xgb_pred),factor(Class_test_smote))
+
+```
+## Comments
+As we can see we are getting an accuracy of 99.95 % overall and for class 1 that is the "fraud detected " , we are getting an accuracy of 99.89 %. 
+
+
+
+```{r vafriable importance}
+#view variable importance plot
+mat <- xgb.importance (feature_names = colnames(train_smote),model = xgb_model)
+xgb.plot.importance (importance_matrix = mat[1:20],main = "Feature Selection",xlab="Gain",ylab="Feature") 
+
+
+```
+## Comments
+
+Here is a plot of  variable importance. we can see that v14 is the most imporatnt variable which has been used to train our XGBoost model.
+
+
+Works cited :
+
+https://www.google.com/url?sa=i&source=images&cd=&ved=2ahUKEwi435Cl96fmAhUCTN8KHY-yDQ0QjRx6BAgBEAQ&url=https%3A%2F%2Fmedium.com%2Fanalytics-vidhya%2Fwhat-is-balance-and-imbalance-dataset-89e8d7f46bc5&psig=AOvVaw1sR-2FXnewuYxiHt_YWLul&ust=1575959100268019
